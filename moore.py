@@ -1,185 +1,210 @@
-import requests
 import re
-
+import numpy as np
 import pandas as pd
-
 import matplotlib.pyplot as plt
 import mplhep as hep
-
-url = "https://en.wikipedia.org/wiki/Transistor_count"
-df_list = pd.read_html(url)
-
-# df_list is now a list of DataFrames, one for each HTML table found on the page
-print(f"Found {len(df_list)} tables on the page.")
-
-# # For instance, let's look at the first table:
-# for i, df in enumerate(df_list):
-#     print(f"### Table {i} ###")
-#     print(df.head())
-
-df = df_list[3]
-print(df.head())
-
-def parse_transistor_count(raw_str: str):
-  """
-  Remove bracketed references, remove commas, extract the largest integer found.
-  E.g.: "74,442 (5,360 excl. ROM & RAM)[14][15]" -> 74442
-  If no valid number is found, returns None.
-  """
-  # Remove bracketed references [14][15], [16], etc.
-  cleaned_str = re.sub(r"\[.*?\]", "", raw_str)
-  # Remove spaces around parentheses to unify
-  cleaned_str = cleaned_str.replace(",", "")
-  # Extract all sequences of digits
-  numbers = re.findall(r"\d+", cleaned_str)
-  if not numbers:
-    return None
-  # If there are multiple numbers (e.g., "74,442 (5360 excl. ...)")
-  # we’ll take the largest one. You could choose the first instead.
-  return min(int(num) for num in numbers)
-
-def parse_year(raw_str: str):
-  """
-  Remove bracketed references, parentheses, etc., and extract a 4-digit year.
-  E.g.: "1970[12][a]" -> 1970
-  If no valid year is found, returns None.
-  """
-  cleaned_str = re.sub(r"\[.*?\]", "", raw_str)   # remove bracketed refs
-  cleaned_str = re.sub(r"\(.*?\)", "", cleaned_str)  # remove parentheses
-  cleaned_str = cleaned_str.strip()
-  # Find 4-digit numbers
-  match = re.search(r"\b(19|20)\d{2}\b", cleaned_str)
-  if match:
-    return int(match.group(0))
-  return None
-
-# --- 2) Apply these parsing functions to create numeric columns ---
-
-df["TransistorCountNumeric"] = df["Transistor count"].apply(parse_transistor_count)
-df["YearNumeric"] = df["Year"].apply(parse_year)
-
-# --- 3) Drop rows with missing values in the numeric columns (if any) ---
-
-df_clean = df.dropna(subset=["TransistorCountNumeric", "YearNumeric"])
-
-# --- 4) Plot transistor count vs. year on a log scale ---
-
-plt.style.use(hep.style.CMS)
-plt.figure()
-plt.scatter(df_clean["YearNumeric"], df_clean["TransistorCountNumeric"], marker='o')
-plt.yscale('log')
-plt.xlabel("Year of Introduction")
-plt.ylabel("Transistor Count (log scale)")
-plt.title("Moore's Law: Transistor Count Over Time ")
-plt.grid(True, which="both", linestyle='--', alpha=0.7)
-plt.savefig("moore_law.png")
-
-
-
-import matplotlib.pyplot as plt
 from adjustText import adjust_text
 
-fig, ax = plt.subplots()
-
-ax.scatter(df_clean["YearNumeric"], df_clean["TransistorCountNumeric"])
-ax.set_yscale("log")
-
-texts = []
-for _, row in df_clean.sample(20).iterrows():
-    x = row["YearNumeric"]
-    y = row["TransistorCountNumeric"]
-    txt = row["Processor"]
-    texts.append(ax.text(x, y, txt, fontsize=8))
-
-adjust_text(
-    texts,
-    x=df_clean.sample(20)["YearNumeric"],  # or use the same points from above
-    y=df_clean.sample(20)["TransistorCountNumeric"],
-    arrowprops=dict(arrowstyle="->", color='black', lw=0.5)
-)
-
-plt.xlabel("Year of Introduction")
-plt.ylabel("Transistor Count (log scale)")
-plt.title("Moore's Law: Transistor Count Over Time")
-plt.grid(True, which="both", linestyle='--', alpha=0.7)
-plt.tight_layout()
-plt.savefig("moore_law_2.png")
-
-
-def remove_parentheses(text):
+# ---------------------------------------------------
+# 1) Helper functions
+# ---------------------------------------------------
+def parse_transistor_count(raw_str: str):
     """
-    Repeatedly remove innermost parentheses and their contents
-    until no more parentheses remain.
-    E.g. 
-      "(multi-chip module, 24 cores, 128 GB GPU memory + 256 MB (LLC/L3) cache)"
-    becomes "" (completely removed, if it’s all inside parentheses).
+    Cleans bracketed refs, commas, etc., then finds numeric values.
+    Returns the smallest integer if multiple numbers appear, or None if no match.
     """
+    if not isinstance(raw_str, str):
+        return None
+    cleaned = re.sub(r"\[.*?\]", "", raw_str)  # remove bracketed refs
+    cleaned = cleaned.replace(",", "")          # remove commas
+    numbers = re.findall(r"\d+", cleaned)
+    if not numbers:
+        return None
+    return min(int(num) for num in numbers)     # or max(...), if you prefer
+
+def parse_year(raw_str: str):
+    """
+    Removes bracketed refs, parentheses, etc., then finds a 4-digit year.
+    """
+    if not isinstance(raw_str, str):
+        return None
+    cleaned = re.sub(r"\[.*?\]", "", raw_str)   # remove bracketed refs
+    cleaned = re.sub(r"\(.*?\)", "", cleaned)   # remove parenthetical text
+    cleaned = cleaned.strip()
+    match = re.search(r"\b(19|20)\d{2}\b", cleaned)
+    return int(match.group(0)) if match else None
+
+def remove_parentheses(text: str):
+    """
+    Repeatedly remove innermost parentheses until no parentheses remain.
+    """
+    if not isinstance(text, str):
+        return text
     while True:
-        # This pattern finds pairs of parentheses containing no further parentheses inside
         new_text = re.sub(r"\([^()]*\)", "", text)
         if new_text == text:
-            # No further changes, so we have removed everything we can
             break
         text = new_text
     return text.strip()
 
+def fit_and_remove_outliers(df):
+    """
+    Performs a log-space linear fit on TransistorCountNumeric vs. YearNumeric,
+    removing points with residual > 2 std dev. Returns inlier rows only.
+    """
+    x = df["YearNumeric"].values
+    y = df["TransistorCountNumeric"].values
+    log_y = np.log(y)
 
-import numpy as np
-import matplotlib.pyplot as plt
-from adjustText import adjust_text
+    # Linear fit in log space: log(y) = a + b*x
+    coeffs = np.polyfit(x, log_y, 1)  # returns [b, a]
+    fitted_log_y = np.polyval(coeffs, x)
+    residuals = log_y - fitted_log_y
 
-# Suppose your cleaned DataFrame is df_clean, with columns:
-#   "YearNumeric", "TransistorCountNumeric", "Processor"
+    # Outlier mask
+    std_res = np.std(residuals)
+    mask = np.abs(residuals) < 2 * std_res
+    return df[mask].copy()
 
-# 1) Compute log10 of the transistor counts:
-log_counts = np.log10(df_clean["TransistorCountNumeric"])
+# ---------------------------------------------------
+# 2) Load data
+# ---------------------------------------------------
+url = "https://en.wikipedia.org/wiki/Transistor_count"
+df_list = pd.read_html(url)
+print(f"Found {len(df_list)} tables on the page.")
 
-# 2) Create bins spanning the range of log10(count):
-#    e.g. 8 bins (this is arbitrary—adjust as you like)
-num_bins = 24
-bin_edges = np.linspace(log_counts.min(), log_counts.max(), num_bins)
+# - df_list[3]: CPUs
+# - df_list[4]: GPUs
+df_cpus = df_list[3].copy()
+df_gpus = df_list[4].copy()
 
-# 3) Assign each row to a bin
-df_clean["log_bin"] = np.digitize(log_counts, bin_edges)
+# ---------------------------------------------------
+# 3) Parse each table + remove outliers
+# ---------------------------------------------------
+datasets = [
+    ("CPUs", df_cpus, "blue", 'o'),
+    ("GPUs", df_gpus, "red",  'x'),
+]
 
-# 4) From each bin, pick 1 row at random (or more if you want)
-df_bins_sampled = df_clean.groupby("log_bin", group_keys=False).apply(
-    lambda x: x.sample(n=1, random_state=42)  # pick 1 per bin
-)
+inliers_list = []
 
-# This ensures you have at most 1 point from each bin => up to 8 total.
-# If your dataset is large, you could pick 2-3 in each bin for more coverage.
+for label, df_raw, color, marker in datasets:
+    # Parse numeric columns
+    df_raw["TransistorCountNumeric"] = df_raw["Transistor count"].apply(parse_transistor_count)
+    df_raw["YearNumeric"] = df_raw["Year"].apply(parse_year)
 
-# Now we have a smaller subset of points that’s spread across the full log range.
-# Let’s label those with adjustText.
+    # Drop rows without valid numeric data
+    df_clean = df_raw.dropna(subset=["TransistorCountNumeric", "YearNumeric"])
+    if df_clean.empty:
+        print(f"No data available after cleaning for: {label}")
+        continue
 
+    # Outlier removal
+    df_inliers = fit_and_remove_outliers(df_clean)
+    print(f"{label}: {len(df_inliers)} inliers kept after outlier removal.")
+
+    # Strip parentheses from "Processor" column for labeling
+    df_inliers["ProcessorStripped"] = df_inliers["Processor"].apply(remove_parentheses)
+
+    # Store for plotting
+    inliers_list.append((label, df_inliers, color, marker))
+
+# ---------------------------------------------------
+# 4) Plot all data on one figure
+# ---------------------------------------------------
+plt.style.use(hep.style.CMS)
 fig, ax = plt.subplots()
-ax.scatter(df_clean["YearNumeric"], df_clean["TransistorCountNumeric"], marker='o')
 
 ax.set_yscale("log")
 ax.set_xlabel("Year of Introduction")
 ax.set_ylabel("Transistor Count (log scale)")
-ax.set_title("Moore's Law: Transistor Count Over Time")
-ax.set_ylim(1e3, 1e11)  # limit the y-axis to avoid crowding
+ax.set_title("Moore's Law: Transistor Count (CPUs & GPUs)")
 
-texts = []
-for _, row in df_bins_sampled.iterrows():
-    x = row["YearNumeric"]
-    y = row["TransistorCountNumeric"]
-    txt = row["Processor"]
-    # Create a Text artist for each chosen point
-    texts.append(ax.text(x, y, remove_parentheses(txt), fontsize=14))
+for label, df_inliers, color, marker in inliers_list:
+    ax.scatter(
+        df_inliers["YearNumeric"],
+        df_inliers["TransistorCountNumeric"],
+        alpha=0.7,
+        color=color,
+        marker=marker,
+        label=label
+    )
 
-# 5) Let adjustText minimize overlap:
-adjust_text(    
-    texts,
-    x=df_bins_sampled["YearNumeric"],
-    y=df_bins_sampled["TransistorCountNumeric"],
-    arrowprops=dict(arrowstyle="-", color='black', lw=0.5),
-    expand_points=(5, 2),
-    force_points=(2, 2),
-)
+# 5.5.a) Gather all inlier points so adjustText knows to avoid them
+all_x = []
+all_y = []
+
+for label, df_inliers, color, marker in inliers_list:
+    all_x.extend(df_inliers["YearNumeric"].values)
+    all_y.extend(df_inliers["TransistorCountNumeric"].values)
 
 plt.grid(True, which="both", linestyle="--", alpha=0.7)
+ax.legend(loc="upper left")
+ax.set_ylim(1e3, 9.9e11)  # optional y-limit
+ax.set_xlim(1968, 2029)  # optional x-limit
+
+# ---------------------------------------------------
+# 5) Binning in log10() space, label one point per bin
+# ---------------------------------------------------
+texts = []
+
+# We'll define how many bins we want in log space
+num_bins = 8  # pick a suitable number of bins for labeling
+
+for label, df_inliers, color, marker in inliers_list:
+
+    if df_inliers.empty:
+        continue
+
+    # 5.1) Compute log10 of transistor counts
+    log_counts = np.log10(df_inliers["TransistorCountNumeric"])
+
+    # 5.2) Create equally spaced bin edges from min->max
+    bin_edges = np.linspace(log_counts.min(), log_counts.max(), num_bins)
+
+    # 5.3) Digitize each row to see which bin it belongs to
+    df_inliers["log_bin"] = np.digitize(log_counts, bin_edges)
+
+    # 5.4) Sample 1 row from each bin
+    # e.g. if a bin is empty, groupby().apply() won't yield a row
+    df_bins_sampled = (
+        df_inliers.groupby("log_bin", group_keys=False)
+        .apply(lambda grp: grp.sample(n=1, random_state=12))
+        .reset_index(drop=True)
+    )
+
+    # Now we have at most 1 point from each bin, giving up to num_bins points
+    for _, row in df_bins_sampled.iterrows():
+        x_val = row["YearNumeric"]
+        y_val = row["TransistorCountNumeric"]
+        txt = row["ProcessorStripped"]
+        t = ax.text(x_val, y_val, txt, fontsize=14)
+        texts.append(t)
+
+# 5.5) Use adjustText to avoid overlaps among *all* labels
+adjust_text(
+    texts,
+    x=all_x,      
+    y=all_y,
+    arrowprops=dict(arrowstyle="-", color='black', lw=0.5),
+    expand_points=(10, 10),
+    force_points=(10, 10),
+    force_static=(10, 10)
+)
+
+# ---------------------------------------------------
+# 6) Author text & show
+# ---------------------------------------------------
+ax.text(
+    0.95, 0.05,
+    "Authors: F. Pantaleo, A. Perego, CERN, 03/2025\nData source: Wikipedia",
+    color="gray",
+    transform=ax.transAxes,
+    ha="right",
+    va="bottom",
+    fontsize=9
+)
+
 plt.tight_layout()
-plt.savefig("moore_law_3.pdf")
+plt.savefig("moore_law.pdf")
+plt.show()
