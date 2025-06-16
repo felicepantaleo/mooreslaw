@@ -141,7 +141,15 @@ def make_scatter(metric, title, ylabel, logy=False):
     ax.legend(loc="best", fontsize=8)
     for _, row in df.iterrows():
         if not (np.isnan(row["Year"]) or np.isnan(row[metric])):
-            ax.text(row["Year"]+0.15, row[metric], row["GPU"], fontsize=7, va="bottom")
+            ax.text(row["Year"]+0.15, row[metric], row["GPU"], fontsize=10, va="bottom")
+    ax.text(
+    0.95, 0.05,
+    "F. Pantaleo, CERN, 06/2025",
+    color="gray",
+    transform=ax.transAxes,
+    ha="right",
+    va="bottom",
+    fontsize=10)
     plt.tight_layout()
     plt.savefig(urlify(title)+".pdf")
     plt.show()
@@ -158,3 +166,4 @@ make_scatter("Mem_BW_GBs", "Memory Bandwidth Evolution", "Bandwidth (GB/s)", log
 make_scatter("Price_per_FP32", "Cost per FP32 TFLOP", "USD per FP32 TFLOP", logy=True)
 make_scatter("Price_per_FP64", "Cost per FP64 TFLOP", "USD per FP64 TFLOP", logy=True)
 make_scatter("Price_per_TF32_TC", "Cost per Tensor TF32 TFLOP", "USD per TF32 Tensor TFLOP", logy=True)
+make_scatter("Price_USD", "GPU Price Evolution", "Price (USD)", logy=True)
